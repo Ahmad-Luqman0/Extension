@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Kuaishou Video Tracker",
+  "version": "1.1",
+  "description": "------",
+  "permissions": [
+    "scripting",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.kuaishou.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Video Tracker"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.kuaishou.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
