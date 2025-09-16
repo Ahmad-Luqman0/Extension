@@ -2,24 +2,60 @@
   if (window.videoTrackerLoaded) return;
   window.videoTrackerLoaded = true;
 
+  // --- State ---
   let seenVideos = new Set();
   let videoDetails = [];
   let watchTimes = {};
+  let videoKeys = {};
   const processedVideoElements = new WeakSet();
   let currentVideoId = null;
+
+  // inactivity
   let inactivityStart = null;
   let inactivityTotal = 0;
-  let trackingEnabled = false; // Start/Stop flag
+  let trackingEnabled = false;
+  let inactivitySessions = []; // store all inactivity logs
+  let potentialInactivityStart = null;
 
-//  Inactivity / Activity Tracking
+  // --- Keyboard Tracking ---
+  async function enableKeyboardLock() {
+    try {
+      if (navigator.keyboard && navigator.keyboard.lock) {
+        await navigator.keyboard.lock();
+        console.log("Keyboard lock enabled.");
+      }
+    } catch (err) {
+      console.warn("Keyboard lock not supported:", err);
+    }
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (trackingEnabled && currentVideoId) {
+      if (!videoKeys[currentVideoId]) videoKeys[currentVideoId] = [];
+      videoKeys[currentVideoId].push(e.key);
+      console.log(`Key pressed on video ${currentVideoId}:`, e.key);
+    }
+  });
+
+  // --- Inactivity Tracking ---
   function resetInactivity() {
     if (inactivityStart !== null) {
       const inactiveFor = Date.now() - inactivityStart;
       inactivityTotal += inactiveFor;
-      console.log(` User active again after ${Math.round(inactiveFor / 1000)}s inactivity.`);
+
+      const session = {
+        start: new Date(inactivityStart).toLocaleString(),
+        end: new Date().toLocaleString(),
+        duration: Math.round(inactiveFor / 1000) + "s"
+      };
+      inactivitySessions.push(session);
+
+      console.log(
+        `Active again | Inactivity session: Start = ${session.start}, End = ${session.end}, Duration = ${session.duration}`
+      );
+
       inactivityStart = null;
     }
-    // Reset potential inactivity so 2-min threshold starts fresh
     potentialInactivityStart = null;
   }
 
@@ -27,23 +63,41 @@
     document.addEventListener(evt, resetInactivity)
   );
 
-  // Only start inactivity timer after 2 minutes
-  let potentialInactivityStart = null;
   setInterval(() => {
     if (trackingEnabled && !document.hidden) {
       if (potentialInactivityStart === null) {
         potentialInactivityStart = Date.now();
       } else if (!inactivityStart && Date.now() - potentialInactivityStart >= 2 * 60 * 1000) {
-        // 2 minutes of inactivity passed
         inactivityStart = potentialInactivityStart;
-        console.log(" Inactivity started (2 minutes threshold reached)");
+        console.log(
+          `Inactivity started at ${new Date(inactivityStart).toLocaleString()} (2 minutes threshold)`
+        );
       }
     } else {
-      potentialInactivityStart = null; // Reset if tab hidden or tracking stopped
+      potentialInactivityStart = null;
     }
-  }, 1000); 
+  }, 1000);
 
-  // Counter Box UI (hidden by default)
+  // Tab hidden
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && trackingEnabled && inactivityStart === null) {
+      inactivityStart = Date.now();
+      console.log(`Inactivity started (tab minimized) at ${new Date(inactivityStart).toLocaleString()}`);
+    } else if (!document.hidden) {
+      resetInactivity();
+    }
+  });
+
+  // Window focus/blur
+  window.addEventListener("blur", () => {
+    if (trackingEnabled && inactivityStart === null) {
+      inactivityStart = Date.now();
+      console.log(`Inactivity started (window blurred) at ${new Date(inactivityStart).toLocaleString()}`);
+    }
+  });
+  window.addEventListener("focus", resetInactivity);
+
+  // --- UI Box + Reset ---
   const counterBox = document.createElement("div");
   Object.assign(counterBox.style, {
     position: "fixed",
@@ -55,9 +109,11 @@
     borderRadius: "8px",
     fontSize: "14px",
     zIndex: "9999",
-    display: "none"
+    display: "none",
+    maxWidth: "260px",
+    lineHeight: "1.4em"
   });
-  counterBox.textContent = "Unique Videos: 0 | Current Video Length: 0s";
+  counterBox.innerHTML = `<div id="counterText">Unique Videos: 0 | Current Video Length: 0s</div>`;
   document.body.appendChild(counterBox);
 
   const resetBtn = document.createElement("button");
@@ -77,19 +133,23 @@
     seenVideos.clear();
     videoDetails = [];
     watchTimes = {};
+    videoKeys = {};
     currentVideoId = null;
     inactivityStart = null;
     inactivityTotal = 0;
+    inactivitySessions = [];
     updateCounter(0);
-    console.log("🔄 Reset all counters");
+    console.log("Reset all counters & inactivity sessions");
   });
   counterBox.appendChild(resetBtn);
 
   function updateCounter(currentDuration = 0) {
-    counterBox.firstChild.textContent =
+    const counterText = counterBox.querySelector("#counterText");
+    counterText.textContent =
       `Unique Videos: ${seenVideos.size} | Current Video Length: ${Math.round(currentDuration)}s`;
   }
 
+  // --- Video Tracking ---
   function generateVideoId(video) {
     return [
       video.currentSrc || video.src || "nosrc",
@@ -116,10 +176,14 @@
         const status = classifyWatchStatus(watched, total);
         const firstTime = videoInfo.firstTime === true;
         const watchLabel = firstTime ? "Not Watched Before" : "Already Watched Before";
+        const keys = videoKeys[videoId] || [];
+
         console.log(
-          `Finalized video ${videoId}: Duration=${total}s, Watched=${watched}s → Status: ${status} | ${watchLabel}`
+          `Finalized video ${videoId}: Duration=${total}s, Watched=${watched}s → Status: ${status} | ${watchLabel} | Keys Pressed: ${keys.join(", ") || "None"}`
         );
+
         videoInfo.firstTime = false;
+        videoKeys[videoId] = [];
       }
     }
   }
@@ -140,20 +204,21 @@
           firstTime: true,
         });
         if (trackingEnabled) console.log(`New video counted ${videoId}: Duration=${video.duration}s`);
-      } else {
-        if (trackingEnabled) console.log(`Video ${videoId} detected again (Already Watched).`);
       }
 
       if (!watchTimes[videoId]) watchTimes[videoId] = 0;
+      if (!videoKeys[videoId]) videoKeys[videoId] = [];
 
       let lastTime = 0;
       let interval = null;
 
-      video.addEventListener("play", () => {
+      video.addEventListener("play", async () => {
         if (!trackingEnabled) return;
         if (currentVideoId && currentVideoId !== videoId) finalizePrevious(currentVideoId);
         currentVideoId = videoId;
+        await enableKeyboardLock();
         updateCounter(video.duration);
+
         if (!interval) {
           interval = setInterval(() => {
             if (trackingEnabled && !video.paused && !video.ended) {
@@ -198,7 +263,7 @@
   const observer = new MutationObserver(scanForVideos);
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // 🔑 Listen to popup messages
+  // --- Popup Messages ---
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.action === "start") {
       trackingEnabled = true;
@@ -211,5 +276,5 @@
     }
   });
 
-  console.log("111,,Video Tracker loaded. Use popup to Start/Stop.");
+  console.log("V1deo Tracker loaded. Use popup to Start/Stop.");
 })();
