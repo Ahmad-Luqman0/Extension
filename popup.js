@@ -1,6 +1,3 @@
-// popup.js
-// Handles login persistence, injecting content.js if needed, and sending start/stop messages.
-
 const loginForm = document.getElementById("loginForm");
 const trackerUI = document.getElementById("trackerUI");
 const loginBtn = document.getElementById("loginBtn");
@@ -9,81 +6,91 @@ const stopBtn = document.getElementById("stopBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 const loginStatus = document.getElementById("loginStatus");
 
+// backend endpoint
 const BACKEND_LOGIN_URL = "https://extension1-production.up.railway.app/login";
 
-// helper: get active tab
-async function getActiveTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs && tabs[0];
-}
+// wrapper div for non-kuaishou message
+let outsideMsg = document.createElement("div");
+outsideMsg.innerHTML = `
+  <p style="text-align:center; font-size:14px; color:#444;">
+    Please open <br><b>https://www.kuaishou.com/new-reco</b><br> to use this extension.
+  </p>`;
+outsideMsg.classList.add("hidden");
+document.body.appendChild(outsideMsg);
 
-// show/hide UI
 function showLogin() {
   loginForm.classList.remove("hidden");
   trackerUI.classList.add("hidden");
+  outsideMsg.classList.add("hidden");
   loginStatus.textContent = "";
 }
 function showTracker() {
   loginForm.classList.add("hidden");
   trackerUI.classList.remove("hidden");
+  outsideMsg.classList.add("hidden");
+  loginStatus.textContent = "";
+}
+function showOutsideMsg() {
+  loginForm.classList.add("hidden");
+  trackerUI.classList.add("hidden");
+  outsideMsg.classList.remove("hidden");
   loginStatus.textContent = "";
 }
 
-// ensure content script injected into given tab
-async function ensureContentScript(tabId) {
-  try {
-    // If content script already injected by content_scripts, this will still be fine
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["content.js"]
+// check active tab
+async function checkTabAndUI() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tabs || !tabs[0]) {
+    showOutsideMsg();
+    return false;
+  }
+  const url = tabs[0].url || "";
+  if (url.startsWith("https://www.kuaishou.com/new-reco")) {
+    // check login state
+    chrome.storage.local.get(["loggedIn"], (res) => {
+      if (res && res.loggedIn) {
+        showTracker();
+      } else {
+        showLogin();
+      }
     });
-    console.log("popup: content.js injected (or already present) into tab", tabId);
     return true;
-  } catch (err) {
-    console.error("popup: failed to inject content.js:", err);
+  } else {
+    showOutsideMsg();
     return false;
   }
 }
 
-// send a message to content script, ensure injection first
+// content script injection helper
+async function ensureContentScript(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    return true;
+  } catch (err) {
+    console.error("Failed to inject content.js:", err);
+    return false;
+  }
+}
+
+// send action (start/stop)
 async function sendActionToTab(action) {
-  const tab = await getActiveTab();
-  if (!tab) {
-    console.error("popup: no active tab");
-    loginStatus.textContent = "No active tab found.";
-    return;
-  }
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tabs || !tabs[0]) return;
 
-  // If host is not matching kuaishou, we still attempt injection — but host_permissions restricts injection to allowed hosts.
-  // If injection fails because of host mismatch, ensureContentScript will throw.
-  const injected = await ensureContentScript(tab.id);
-  if (!injected) {
-    loginStatus.textContent = "Could not inject script (check host/permissions).";
-    return;
-  }
+  const injected = await ensureContentScript(tabs[0].id);
+  if (!injected) return;
 
-  // send message
-  chrome.tabs.sendMessage(tab.id, { action }, (response) => {
+  chrome.tabs.sendMessage(tabs[0].id, { action }, (response) => {
     if (chrome.runtime.lastError) {
       console.error("popup: sendMessage error:", chrome.runtime.lastError.message);
-      loginStatus.textContent = "Message failed: " + chrome.runtime.lastError.message;
-    } else {
-      console.log("popup: message sent:", action, "response:", response);
-      loginStatus.textContent = ""; // clear
     }
   });
 }
 
-// check stored login state on load
-chrome.storage.local.get(["loggedIn"], (res) => {
-  if (res && res.loggedIn) {
-    showTracker();
-  } else {
-    showLogin();
-  }
-});
-
-// login flow
+// login
 loginBtn.addEventListener("click", async () => {
   loginStatus.textContent = "Logging in...";
   const username = document.getElementById("username").value.trim();
@@ -98,12 +105,11 @@ loginBtn.addEventListener("click", async () => {
     const resp = await fetch(BACKEND_LOGIN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password }),
     });
     const data = await resp.json();
 
     if (data && data.success) {
-      // persist login
       chrome.storage.local.set({ loggedIn: true }, () => {
         showTracker();
       });
@@ -116,26 +122,25 @@ loginBtn.addEventListener("click", async () => {
   }
 });
 
-// logout: send stop to page, then clear login
+// logout
 logoutBtn.addEventListener("click", async () => {
-  // try to stop tracking on page (best-effort)
   await sendActionToTab("stop");
-
   chrome.storage.local.remove("loggedIn", () => {
     showLogin();
   });
 });
 
-// start/stop buttons
+// start/stop
 startBtn.addEventListener("click", async () => {
   loginStatus.textContent = "Starting...";
   await sendActionToTab("start");
-  // small UI feedback
-  setTimeout(() => loginStatus.textContent = "", 1000);
+  setTimeout(() => (loginStatus.textContent = ""), 1000);
 });
-
 stopBtn.addEventListener("click", async () => {
   loginStatus.textContent = "Stopping...";
   await sendActionToTab("stop");
-  setTimeout(() => loginStatus.textContent = "", 1000);
+  setTimeout(() => (loginStatus.textContent = ""), 1000);
 });
+
+// run on popup load
+checkTabAndUI();
