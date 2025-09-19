@@ -6,8 +6,9 @@ const stopBtn = document.getElementById("stopBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 const loginStatus = document.getElementById("loginStatus");
 
-// backend endpoint
+// backend endpoints
 const BACKEND_LOGIN_URL = "https://extension1-production.up.railway.app/login";
+const BACKEND_LOGOUT_URL = "https://extension1-production.up.railway.app/logout";
 
 // wrapper div for non-kuaishou message
 let outsideMsg = document.createElement("div");
@@ -46,9 +47,8 @@ async function checkTabAndUI() {
   }
   const url = tabs[0].url || "";
   if (url.startsWith("https://www.kuaishou.com/new-reco")) {
-    // check login state
-    chrome.storage.local.get(["loggedIn"], (res) => {
-      if (res && res.loggedIn) {
+    chrome.storage.local.get(["loggedIn", "username", "session_id"], (res) => {
+      if (res && res.loggedIn && res.username && res.session_id) {
         showTracker();
       } else {
         showLogin();
@@ -83,10 +83,22 @@ async function sendActionToTab(action) {
   const injected = await ensureContentScript(tabs[0].id);
   if (!injected) return;
 
-  chrome.tabs.sendMessage(tabs[0].id, { action }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.error("popup: sendMessage error:", chrome.runtime.lastError.message);
-    }
+  // include session_id + username from storage
+  chrome.storage.local.get(["username", "session_id"], (res) => {
+    const msg = { action, username: res.username, session_id: res.session_id };
+    chrome.tabs.sendMessage(tabs[0].id, msg, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("popup: sendMessage error:", chrome.runtime.lastError.message);
+      }
+
+      // Check if backend requested session split (auto-update session_id)
+      if (response && response.action === "session_split" && response.new_session_id) {
+        console.warn("Session split detected. Switching to new session:", response.new_session_id);
+        chrome.storage.local.set({ session_id: response.new_session_id }, () => {
+          console.log("popup: session_id updated to", response.new_session_id);
+        });
+      }
+    });
   });
 }
 
@@ -109,10 +121,13 @@ loginBtn.addEventListener("click", async () => {
     });
     const data = await resp.json();
 
-    if (data && data.success) {
-      chrome.storage.local.set({ loggedIn: true }, () => {
+    if (data && data.success && data.session_id) {
+      // Save login state, username, and session_id
+      chrome.storage.local.set({ loggedIn: true, username, session_id: data.session_id }, () => {
         showTracker();
       });
+
+      loginStatus.textContent = "Logged in as " + username;
     } else {
       loginStatus.textContent = "Invalid username or password.";
     }
@@ -124,8 +139,24 @@ loginBtn.addEventListener("click", async () => {
 
 // logout
 logoutBtn.addEventListener("click", async () => {
+  chrome.storage.local.get(["session_id"], async (res) => {
+    if (res.session_id) {
+      // end session on backend
+      try {
+        await fetch(BACKEND_LOGOUT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: res.session_id }),
+        });
+      } catch (err) {
+        console.error("popup: logout fetch error:", err);
+      }
+    }
+  });
+
   await sendActionToTab("stop");
-  chrome.storage.local.remove("loggedIn", () => {
+
+  chrome.storage.local.remove(["loggedIn", "username", "session_id"], () => {
     showLogin();
   });
 });
