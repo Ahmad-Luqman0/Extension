@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Video Tracker",
+  "version": "1.0",
+  "description": "------",
+  "permissions": [
+    "scripting",
+    "tabs",
+    "storage",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://www.kuaishou.com/*",
+    "https://extension1-production.up.railway.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Video Tracker"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.kuaishou.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
